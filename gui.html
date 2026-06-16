@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Non-Planar Spiral Slicer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.45 system-ui,sans-serif; background:#101216; color:#dde3ea; overflow:hidden; }
+  #panel { position:fixed; top:0; left:0; bottom:0; width:330px; overflow-y:auto;
+           background:#181b21f2; padding:14px 16px 30px; z-index:2; }
+  h1 { font-size:15px; margin:0 0 10px; color:#7fd4ff; }
+  details { margin:8px 0; border:1px solid #262c36; border-radius:8px; padding:6px 10px; }
+  summary { cursor:pointer; color:#9ab; font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  .row { display:flex; align-items:center; gap:8px; margin:5px 0; }
+  .row label { flex:1.4; color:#bcc8d4; }
+  .row input[type=number] { flex:1; width:70px; background:#232830; color:#dde3ea;
+        border:1px solid #3c4654; border-radius:5px; padding:3px 6px; }
+  .row input[type=range] { flex:1; accent-color:#7fd4ff; }
+  .row span.val { color:#8fa; font-size:11.5px; min-width:38px; text-align:right; }
+  textarea { width:100%; background:#232830; color:#dde3ea; border:1px solid #3c4654;
+             border-radius:5px; font:11px monospace; }
+  #drop, #nozzleDrop { background:#232830; border:2px dashed #3c4654; border-radius:10px;
+          text-align:center; padding:14px 8px; cursor:pointer; margin:6px 0;
+          transition:border-color .15s; font-size:12px; }
+  #drop.armed { border-color:#8fa; }
+  #drop:hover, #drop.over, #nozzleDrop:hover, #nozzleDrop.armed { border-color:#7fd4ff; }
+  #drop .fname, #nozzleDrop .fname { color:#8fa; font-size:12px; word-break:break-all; }
+  button { background:#2563eb; color:#fff; border:0; border-radius:8px; padding:10px;
+           font-size:14px; font-weight:600; cursor:pointer; width:100%; margin:6px 0; }
+  button:disabled { background:#374151; color:#9ca3af; cursor:default; }
+  button.secondary { background:#232830; border:1px solid #3c4654; font-weight:400; font-size:12.5px; padding:7px; }
+  #log { font:11px/1.5 monospace; color:#9ab; background:#13161b; border-radius:8px;
+         padding:8px 10px; max-height:140px; overflow-y:auto; white-space:pre-wrap; margin:8px 0; }
+  #stats { font-size:12px; color:#aab8c6; white-space:pre-line; }
+  .warn { color:#ffb347; font-size:11.5px; white-space:pre-wrap; margin:6px 0; }
+  .pass { color:#6f6; } .fail { color:#f66; }
+  #error { display:none; background:#3a1518; border:1px solid #b91c1c; color:#fca5a5;
+           border-radius:8px; padding:9px 11px; font-size:12.5px; white-space:pre-wrap;
+           word-break:break-word; margin:8px 0; }
+  #legend { height:12px; border-radius:4px; margin:4px 0 2px;
+            background:linear-gradient(90deg,#3056ff,#30d5c8,#7fff30,#ffd530,#ff4030); }
+  .lr { display:flex; justify-content:space-between; font-size:10.5px; color:#9ab; }
+  #viewbar { display:flex; gap:8px; align-items:center; margin:6px 0; }
+  #viewbar label { font-size:11.5px; color:#9ab; }
+  select { background:#232830; color:#dde3ea; border:1px solid #3c4654; border-radius:5px; padding:2px 5px; }
+  .hint { color:#67727e; font-size:11px; margin:3px 0; }
+  .row input[type=checkbox] { width:16px; height:16px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>Non-Planar Spiral Slicer</h1>
+
+  <div id="drop">
+    <div id="dropLabel">Drop STL / OBJ here<br><span style="color:#67727e">(or click to browse)</span></div>
+    <div class="fname" id="fname"></div>
+    <input type="file" id="meshFile" accept=".stl,.obj" style="display:none">
+  </div>
+
+  <!-- ── Model Transform ──────────────────────────────────────── -->
+  <details id="transformSection">
+    <summary>Model Transform</summary>
+    <div class="hint">Rotate/translate before slicing. Preview updates live.</div>
+    <div class="row"><label>Rotate X (°)</label>
+      <input type="number" step="1" data-key="transform_rotate_x" id="trx" value="0"></div>
+    <div class="row"><label>Rotate Y (°)</label>
+      <input type="number" step="1" data-key="transform_rotate_y" id="try_" value="0"></div>
+    <div class="row"><label>Rotate Z (°)</label>
+      <input type="number" step="1" data-key="transform_rotate_z" id="trz" value="0"></div>
+    <div class="row"><label>Translate X (mm)</label>
+      <input type="number" step="1" data-key="transform_translate_x" id="ttx" value="0"></div>
+    <div class="row"><label>Translate Y (mm)</label>
+      <input type="number" step="1" data-key="transform_translate_y" id="tty" value="0"></div>
+    <div class="row"><label>Translate Z (mm)</label>
+      <input type="number" step="1" data-key="transform_translate_z" id="ttz" value="0"></div>
+    <button class="secondary" id="resetTransformBtn" style="margin-top:4px">Reset transform</button>
+  </details>
+
+  <!-- ── Settings form (auto-generated) ──────────────────────── -->
+  <div id="settingsForm"></div>
+
+  <!-- ── Layer density ────────────────────────────────────────── -->
+  <details open>
+    <summary>Layer Density</summary>
+    <div class="hint">How hard to maximise layer height (i.e. use the fewest
+      layers). <b>100% = thickest layers / fewest lines</b>. Lower it to add more,
+      thinner layers so the path can conform to fine geometry and the gaps between
+      layers shrink (e.g. 50% targets an average layer height of half the max).
+      Layer height never exceeds your max or drops below your min. Takes priority
+      over Layer Conformity.</div>
+    <div class="row">
+      <label>Layer height usage</label>
+      <input type="range" id="densSlider" min="10" max="100" value="100">
+      <span class="val" id="densVal">100%</span>
+    </div>
+  </details>
+
+  <!-- ── Layer conformity ─────────────────────────────────────── -->
+  <details open>
+    <summary>Layer Conformity</summary>
+    <div class="hint">Balances even layers against hugging the surface:
+      <b>100% = hug the surface</b> — each layer sits right on the one below,
+      so beads stay supported (minimal mid-air on overhangs), at the cost of more
+      Z variation. <b>0% = even / planar layers</b> — calm uniform layers, but
+      X/Y gaps open up on overhangs (printing in mid-air). The
+      <i>Layer Steepness Limit</i> below is a hard angle cap: it eases any layer
+      steeper than your angle back toward even (which reopens some gaps there).
+      Everything stays on the mesh surface.</div>
+    <div class="row" id="curvRow">
+      <label>Surface conformity</label>
+      <input type="range" id="curvSlider" min="0" max="100" value="100">
+      <span class="val" id="curvVal">100%</span>
+    </div>
+  </details>
+
+  <!-- ── Layer steepness limit ──────────────────── -->
+  <details>
+    <summary>Layer Steepness Limit</summary>
+    <div class="hint">Caps how steep (from horizontal) the printed layer lines may
+      get, flattening over-steep spots so a normal printer can print them. Turn
+      off if slicing feels slow.</div>
+    <div class="row">
+      <label>Limit steepness</label>
+      <input type="checkbox" id="steepCheck">
+    </div>
+    <div class="row" id="steepRow" style="opacity:0.4">
+      <label>Max steepness</label>
+      <input type="range" id="steepSlider" min="1" max="90" value="30">
+      <span class="val" id="steepVal">30°</span>
+    </div>
+  </details>
+
+  <!-- ── Path smoothing ───────────────────────────── -->
+  <details>
+    <summary>Path Smoothing</summary>
+    <div class="hint">Rounds sharp corners and steps so moves flow (helps the
+      stacked-sucker zig-zag). Higher = smoother but cuts corners a little more,
+      so it drifts slightly further from the surface (it stays within roughly a
+      line width at moderate settings). 0% = off.</div>
+    <div class="row">
+      <label>Smoothing</label>
+      <input type="range" id="smoothSlider" min="0" max="100" value="0">
+      <span class="val" id="smoothVal">0%</span>
+    </div>
+  </details>
+
+  <!-- ── Nozzle model ─────────────────────────────────────────── -->
+  <details>
+    <summary>Nozzle Model</summary>
+    <div class="hint">Import a 3D model of your print head / nozzle assembly.
+      It will follow the toolpath in the viewer so you can check clearance.</div>
+    <div id="nozzleDrop">
+      Drop nozzle STL / OBJ here<br>
+      <span style="color:#67727e">(or click to browse)</span>
+      <div class="fname" id="nozzleFname"></div>
+      <input type="file" id="nozzleFile" accept=".stl,.obj" style="display:none">
+    </div>
+    <div class="row"><label>Show nozzle on path</label>
+      <input type="checkbox" id="showNozzle" checked></div>
+    <div class="row"><label>Nozzle Z offset (mm)</label>
+      <input type="number" step="0.1" id="nozzleZOffset" value="0"></div>
+    <div class="hint" id="nozzleHint" style="color:#ffb347;display:none">
+      ⚠ No nozzle model loaded.</div>
+  </details>
+
+  <div class="row"><label>Verify after slicing (slower)</label><input type="checkbox" id="verify"></div>
+  <button id="sliceBtn" disabled>Slice</button>
+  <button id="dlBtn" class="secondary" disabled>Download GCODE</button>
+
+  <div id="error"></div>
+  <div id="log"></div>
+  <div id="stats"></div>
+  <div id="verifyOut"></div>
+  <div id="warnings"></div>
+
+  <!-- ── View options ─────────────────────────────────────────── -->
+  <details><summary>View options</summary>
+    <div class="row"><label>Show mesh</label><input type="checkbox" id="showMesh" checked></div>
+    <div class="row"><label>Show toolpath</label><input type="checkbox" id="showPath" checked></div>
+    <div class="row"><label>Mesh opacity</label><input type="range" id="meshOp" min="0" max="100" value="30"></div>
+    <div class="row"><label>Zoom sensitivity</label>
+      <input type="range" id="zoomSens" min="20" max="400" value="160">
+      <span class="val" id="zoomVal">1.6×</span></div>
+    <div class="row"><label>Print progress</label><input type="range" id="progress" min="0" max="1000" value="1000"></div>
+    <div class="hint">Tip: with a nozzle model loaded, click-drag the nozzle in the
+      3D view to slide it smoothly around the current loop for fine positioning.</div>
+    <div id="viewbar"><label>Color by</label>
+      <select id="colorBy">
+        <option value="height">layer height (mm)</option>
+        <option value="z">height Z (mm)</option>
+        <option value="speed">speed (mm/s)</option>
+        <option value="flow">flow rate (mm³/s)</option>
+      </select>
+    </div>
+    <div id="legend"></div><div class="lr"><span id="lmin"></span><span id="lmax"></span></div>
+  </details>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+// ───────────────────────── settings form ──────────────────────────────────
+const GROUPS = [
+  ['Extrusion', [
+    ['nozzle_diameter','Nozzle Ø (mm)',0.05], ['line_width','Line width (0 = auto)',0.05],
+    ['layer_height','Layer height (mm)',0.01], ['min_layer_height','Min layer height',0.01],
+    ['max_layer_height','Max layer height',0.01], ['first_layer_height','First layer height',0.01],
+    ['filament_diameter','Filament Ø (mm)',0.05]]],
+  ['Flow', [
+    ['flow_rate','Flow rate ×',0.01], ['min_flow_multiplier','Min flow ×',0.05],
+    ['max_flow_multiplier','Max flow ×',0.05], ['max_volumetric_speed','Max flow (mm³/s)',0.5]]],
+  ['Speed', [
+    ['print_speed','Print speed (mm/s)',1], ['first_layer_speed','First layer (mm/s)',1],
+    ['travel_speed','Travel (mm/s)',5]]],
+  ['Temperature', [
+    ['nozzle_temp','Nozzle (°C)',5], ['bed_temp','Bed (°C)',5], ['fan_percent','Fan (%)',5]]],
+  ['Bed adhesion', [
+    ['base_loops','Closed base loops',1], ['brim_loops','Brim loops',1],
+    ['inward_brim_loops','Inward brim loops (0=off)',1],
+    ['inward_brim_spacing','Inward brim spacing (mm,0=auto)',0.05]]],
+  ['Quality', [
+    ['xy_resolution','Segment length (mm)',0.1], ['v_resolution','Grid spacing (mm)',0.02]]],
+  ['Machine', [
+    ['bed_size_x','Bed X (mm)',10], ['bed_size_y','Bed Y (mm)',10], ['bed_size_z','Bed Z (mm)',10],
+    ['max_tilt_warn','Tilt warning (°)',5], ['retract_mm','Retract (mm)',0.1],
+    ['retract_speed','Retract speed (mm/s)',5]]],
+];
+
+// Keys managed by custom UI (excluded from auto-form to avoid duplication)
+const CUSTOM_KEYS = new Set([
+  'transform_rotate_x','transform_rotate_y','transform_rotate_z',
+  'transform_translate_x','transform_translate_y','transform_translate_z',
+  'curvature_factor',
+]);
+
+let settings = {};
+const form = document.getElementById('settingsForm');
+
+function buildForm() {
+  form.innerHTML = '';
+  GROUPS.forEach(([title, items], gi) => {
+    const d = document.createElement('details');
+    if (gi === 0) d.open = true;
+    d.innerHTML = `<summary>${title}</summary>`;
+    for (const [key, label, step] of items) {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = `<label>${label}</label><input type="number" step="${step}" data-key="${key}" value="${settings[key] ?? 0}">`;
+      d.appendChild(row);
+    }
+    form.appendChild(d);
+  });
+  const g = document.createElement('details');
+  g.innerHTML = `<summary>Start / end gcode</summary>
+    <textarea data-key="start_gcode" rows="4">${settings.start_gcode || ''}</textarea>
+    <textarea data-key="end_gcode" rows="4">${settings.end_gcode || ''}</textarea>`;
+  form.appendChild(g);
+
+  form.addEventListener('change', e => {
+    const k = e.target.dataset.key; if (!k) return;
+    settings[k] = e.target.type === 'number' ? parseFloat(e.target.value) : e.target.value;
+    fetch('/save_settings', { method: 'POST', body: JSON.stringify(settings) });
+  });
+}
+
+// Populate transform inputs from settings
+function syncTransformUI() {
+  const ids = {
+    transform_rotate_x: 'trx', transform_rotate_y: 'try_', transform_rotate_z: 'trz',
+    transform_translate_x: 'ttx', transform_translate_y: 'tty', transform_translate_z: 'ttz',
+  };
+  for (const [key, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el) el.value = settings[key] ?? 0;
+  }
+}
+
+fetch('/settings').then(r => r.json()).then(s => { settings = s; buildForm(); syncTransformUI(); });
+
+// ───────────────────────── three.js scene ─────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101216);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 5000);
+camera.up.set(0, 0, 1); camera.position.set(260, -260, 220);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight); renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 70);
+controls.zoomSpeed = 1.6;   // more sensitive zoom (esp. for trackpads)
+scene.add(new THREE.AmbientLight(0xffffff, .55));
+const dl = new THREE.DirectionalLight(0xffffff, 1.2); dl.position.set(200, -150, 400); scene.add(dl);
+const dl2 = new THREE.DirectionalLight(0x88aaff, .4); dl2.position.set(-200, 150, 100); scene.add(dl2);
+const bed = new THREE.GridHelper(500, 25, 0x335, 0x223); bed.rotation.x = Math.PI / 2; scene.add(bed);
+scene.add(new THREE.AxesHelper(30));
+
+let meshObj = null, pathObj = null, nozzleObj = null;
+let rawGeometry = null;
+let segMeta = null, meshFile = null, gcodeText = null, gcodeName = 'out.gcode';
+// Fine print position [0..1]; the coarse slider sets it, dragging the nozzle
+// sets it at sub-step resolution within the current loop.
+let progressFrac = 1.0;
+
+const meshMat = new THREE.MeshStandardMaterial({
+  color: 0x9fd8ff, roughness: .55, metalness: .05,
+  transparent: true, opacity: .30, side: THREE.DoubleSide, depthWrite: false
+});
+const nozzleMat = new THREE.MeshStandardMaterial({
+  color: 0xff8844, roughness: .4, metalness: .2,
+  transparent: true, opacity: .85,
+});
+
+// ───────────────────────── transform ──────────────────────────────────────
+function getTransformFromUI() {
+  return {
+    rx: THREE.MathUtils.degToRad(parseFloat(document.getElementById('trx').value) || 0),
+    ry: THREE.MathUtils.degToRad(parseFloat(document.getElementById('try_').value) || 0),
+    rz: THREE.MathUtils.degToRad(parseFloat(document.getElementById('trz').value) || 0),
+    tx: parseFloat(document.getElementById('ttx').value) || 0,
+    ty: parseFloat(document.getElementById('tty').value) || 0,
+    tz: parseFloat(document.getElementById('ttz').value) || 0,
+  };
+}
+
+function updateMeshTransform() {
+  if (!rawGeometry) return;
+  const geo = rawGeometry.clone();
+  const { rx, ry, rz, tx, ty, tz } = getTransformFromUI();
+
+  // Rotate about geometry centroid
+  geo.computeBoundingBox();
+  const center = new THREE.Vector3();
+  geo.boundingBox.getCenter(center);
+  geo.translate(-center.x, -center.y, -center.z);
+  geo.applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)));
+  geo.translate(center.x, center.y, center.z);
+
+  // Center for bed placement
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+  if (meshObj) scene.remove(meshObj);
+  geo.computeVertexNormals();
+  meshObj = new THREE.Mesh(geo, meshMat);
+  meshObj.position.set(
+    -(bb.min.x + bb.max.x) / 2 + tx,
+    -(bb.min.y + bb.max.y) / 2 + ty,
+    -bb.min.z + tz
+  );
+  scene.add(meshObj);
+  meshObj.visible = document.getElementById('showMesh').checked;
+  controls.target.set(0, 0, (bb.max.z - bb.min.z) / 2);
+}
+
+// Wire up transform inputs
+['trx', 'try_', 'trz', 'ttx', 'tty', 'ttz'].forEach(id => {
+  const keyMap = {
+    trx: 'transform_rotate_x', try_: 'transform_rotate_y', trz: 'transform_rotate_z',
+    ttx: 'transform_translate_x', tty: 'transform_translate_y', ttz: 'transform_translate_z',
+  };
+  document.getElementById(id).addEventListener('input', () => {
+    const key = keyMap[id];
+    settings[key] = parseFloat(document.getElementById(id).value) || 0;
+    fetch('/save_settings', { method: 'POST', body: JSON.stringify(settings) });
+    updateMeshTransform();
+  });
+});
+
+document.getElementById('resetTransformBtn').onclick = () => {
+  ['trx', 'try_', 'trz', 'ttx', 'tty', 'ttz'].forEach(id => {
+    document.getElementById(id).value = 0;
+  });
+  ['transform_rotate_x','transform_rotate_y','transform_rotate_z',
+   'transform_translate_x','transform_translate_y','transform_translate_z'].forEach(k => {
+    settings[k] = 0;
+  });
+  fetch('/save_settings', { method: 'POST', body: JSON.stringify(settings) });
+  updateMeshTransform();
+};
+
+// ───────────────────────── mesh loading ──────────────────────────────────
+function loadMeshFile(f) {
+  meshFile = f;
+  document.getElementById('fname').textContent = f.name;
+  document.getElementById('drop').classList.add('armed');
+  document.getElementById('sliceBtn').disabled = false;
+  const r = new FileReader();
+  const isStl = /\.stl$/i.test(f.name);
+  r.onload = () => {
+    if (isStl) rawGeometry = new STLLoader().parse(r.result);
+    else {
+      const grp = new OBJLoader().parse(r.result);
+      let g = null;
+      grp.traverse(o => { if (o.isMesh && !g) g = o.geometry; });
+      rawGeometry = g;
+    }
+    if (rawGeometry) updateMeshTransform();
+  };
+  if (isStl) r.readAsArrayBuffer(f); else r.readAsText(f);
+}
+
+// ───────────────────────── nozzle loading ────────────────────────────────
+function setNozzleGeometry(geo, name) {
+  if (!geo) return;
+  if (nozzleObj) scene.remove(nozzleObj);
+  geo.computeVertexNormals();
+  nozzleObj = new THREE.Mesh(geo, nozzleMat);
+  scene.add(nozzleObj);
+  // hidden until there's a toolpath to sit on; updateNozzlePosition reveals it
+  nozzleObj.visible = document.getElementById('showNozzle').checked && !!(segMeta && pathObj);
+  if (name) document.getElementById('nozzleFname').textContent = name;
+  document.getElementById('nozzleDrop').classList.add('armed');
+  document.getElementById('nozzleHint').style.display = 'none';
+  updateNozzlePosition();
+}
+
+function parseNozzle(data, isStl) {
+  if (isStl) return new STLLoader().parse(data);
+  const grp = new OBJLoader().parse(data);
+  let geo = null;
+  grp.traverse(o => { if (o.isMesh && !geo) geo = o.geometry; });
+  return geo;
+}
+
+// Load the bundled default nozzle (served by app.py) on startup, if present.
+fetch('/default_nozzle')
+  .then(r => r.ok ? r.arrayBuffer() : Promise.reject())
+  .then(buf => setNozzleGeometry(parseNozzle(buf, true), 'Example_Nozzle.stl'))
+  .catch(() => {});
+
+// ───────────────────────── recycled-filament gate ────────────────────────
+function recycledGate() {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:1000;background:#0b0d11ee;' +
+    'display:flex;align-items:center;justify-content:center;';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#181b21;border:1px solid #2a3140;border-radius:14px;' +
+    'padding:28px 30px;max-width:460px;text-align:center;box-shadow:0 12px 48px #000c;';
+  ov.appendChild(card); document.body.appendChild(ov);
+  const close = () => ov.remove();
+
+  function ask(html, buttons) {
+    card.innerHTML = '<div style="font-size:16px;line-height:1.5;margin-bottom:18px">' + html + '</div>';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:10px;justify-content:center;flex-wrap:wrap;';
+    buttons.forEach(b => {
+      const btn = document.createElement('button');
+      btn.textContent = b.label;
+      btn.style.cssText = 'width:auto;padding:9px 18px;margin:0;' +
+        (b.primary ? '' : 'background:#232830;border:1px solid #3c4654;font-weight:400;');
+      btn.onclick = b.onClick;
+      row.appendChild(btn);
+    });
+    card.appendChild(row);
+  }
+  function say(text, autoCloseMs) {
+    card.innerHTML = '<div style="font-size:19px;padding:6px 0">' + text + '</div>';
+    if (autoCloseMs) setTimeout(close, autoCloseMs);
+  }
+
+  ask('Are you printing / will you print with <b>recycled filament</b>?', [
+    { label: 'Yes', primary: true, onClick: () => {
+        fetch('/recycled_ack', { method: 'POST' }).catch(() => {});
+        say('Good shit!', 1400);
+      } },
+    { label: 'No', onClick: () => ask('Why not?', [
+        { label: "I can't right now", primary: true,
+          onClick: () => say("it's worth it :)", 1700) },
+        { label: "I genuinely don't care", onClick: () => {
+            say('this tool is not for you');
+            fetch('/disable', { method: 'POST' })
+              .catch(() => {})
+              .then(() => setTimeout(() => { try { window.close(); } catch (_) {} location.reload(); }, 1700));
+          } },
+      ]) },
+  ]);
+}
+
+// Show the gate on startup unless the user already answered "Yes".
+fetch('/recycled_status')
+  .then(r => r.json())
+  .then(s => { if (!s.ack && !s.disabled) recycledGate(); })
+  .catch(() => recycledGate());
+
+function loadNozzleFile(f) {
+  const r = new FileReader();
+  const isStl = /\.stl$/i.test(f.name);
+  r.onload = () => setNozzleGeometry(parseNozzle(r.result, isStl), f.name);
+  if (isStl) r.readAsArrayBuffer(f); else r.readAsText(f);
+}
+
+// ───────────────────────── GCODE parsing / path display ──────────────────
+function parseGcode(text) {
+  const pts = [], ext = [], feed = [];
+  let x = 0, y = 0, z = 0, f = 0, gset = null;
+  for (const raw of text.split('\n')) {
+    if (raw.startsWith('; SETTINGS_JSON:')) {
+      try { gset = JSON.parse(raw.slice(16)); } catch (e) {}
+      continue;
+    }
+    const line = raw.split(';')[0].trim();
+    if (!line.startsWith('G0') && !line.startsWith('G1')) continue;
+    let nx = x, ny = y, nz = z, e = 0, moved = false;
+    for (const m of line.matchAll(/([XYZEF])(-?\d+\.?\d*)/g)) {
+      const v = parseFloat(m[2]);
+      if (m[1] === 'X') { nx = v; moved = true; }
+      else if (m[1] === 'Y') { ny = v; moved = true; }
+      else if (m[1] === 'Z') { nz = v; moved = true; }
+      else if (m[1] === 'E') { e = v; }
+      else if (m[1] === 'F') { f = v; }
+    }
+    if (moved) { pts.push(x, y, z, nx, ny, nz); ext.push(line.startsWith('G1') ? e : 0); feed.push(f); }
+    x = nx; y = ny; z = nz;
+  }
+  return { pts: new Float32Array(pts), ext, feed, settings: gset };
+}
+
+function buildPath(text) {
+  const data = parseGcode(text);
+  if (pathObj) scene.remove(pathObj);
+  const s = data.settings || {};
+  const width = (s.line_width && s.line_width > 0) ? s.line_width : (s.nozzle_diameter || 0.6) * 1.15;
+  const filArea = Math.PI * Math.pow((s.filament_diameter || 1.75) / 2, 2);
+  const keep = [], h = [], v = [], fl = [];
+  let zmin = 1e9, zmax = -1e9;
+  for (let i = 0; i < data.ext.length; i++) {
+    if (data.ext[i] <= 0) continue;
+    const o = i * 6;
+    const d = Math.hypot(data.pts[o + 3] - data.pts[o], data.pts[o + 4] - data.pts[o + 1], data.pts[o + 5] - data.pts[o + 2]);
+    if (d < 1e-9) continue;
+    const spd = data.feed[i] / 60;                 // mm/s
+    keep.push(i); h.push(data.ext[i] * filArea / (d * width)); v.push(spd);
+    // volumetric flow = extruded volume per mm of travel × travel speed (mm³/s)
+    fl.push(data.ext[i] * filArea / d * spd);
+    zmin = Math.min(zmin, data.pts[o + 2]); zmax = Math.max(zmax, data.pts[o + 5]);
+  }
+  const pos = new Float32Array(keep.length * 6);
+  for (let k = 0; k < keep.length; k++) pos.set(data.pts.subarray(keep[k] * 6, keep[k] * 6 + 6), k * 6);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(keep.length * 6), 3));
+  pathObj = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true }));
+  pathObj.position.set(-(s.bed_size_x || 500) / 2, -(s.bed_size_y || 500) / 2, 0);
+  scene.add(pathObj);
+  pathObj.visible = document.getElementById('showPath').checked;
+  segMeta = { h, v, fl, zmin, zmax, count: keep.length, pos };
+  // World-space endpoint of each drawn segment + an unwrapped angle around the
+  // path centre, used to grab/drag the nozzle and to bound "the current loop".
+  {
+    const cnt = keep.length;
+    const ox = pathObj.position.x, oy = pathObj.position.y, oz = pathObj.position.z;
+    const wend = new Float32Array(cnt * 3);
+    let cx = 0, cy = 0;
+    for (let k = 0; k < cnt; k++) {
+      const b = k * 6;
+      const ex = pos[b + 3] + ox, ey = pos[b + 4] + oy, ez = pos[b + 5] + oz;
+      wend[k * 3] = ex; wend[k * 3 + 1] = ey; wend[k * 3 + 2] = ez; cx += ex; cy += ey;
+    }
+    cx /= Math.max(cnt, 1); cy /= Math.max(cnt, 1);
+    const ang = new Float32Array(cnt); let prev = 0, acc = 0;
+    for (let k = 0; k < cnt; k++) {
+      const a = Math.atan2(wend[k * 3 + 1] - cy, wend[k * 3] - cx);
+      if (k > 0) { let d = a - prev; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; acc += d; }
+      prev = a; ang[k] = acc;
+    }
+    const turns = Math.abs(ang[cnt - 1] - ang[0]) / (2 * Math.PI);
+    segMeta.wend = wend; segMeta.ang = ang; segMeta.cx = cx; segMeta.cy = cy;
+    segMeta.segPerTurn = turns > 1e-6 ? cnt / turns : cnt;
+  }
+  colorize(); applyProgress();
+}
+
+function colorize() {
+  if (!segMeta || !pathObj) return;
+  const mode = document.getElementById('colorBy').value;
+  let vals;
+  if (mode === 'height') vals = segMeta.h;
+  else if (mode === 'speed') vals = segMeta.v;
+  else if (mode === 'flow') vals = segMeta.fl;
+  else {
+    vals = [];
+    const p = pathObj.geometry.getAttribute('position');
+    for (let k = 0; k < segMeta.count; k++) vals.push((p.getZ(k * 2) + p.getZ(k * 2 + 1)) / 2);
+  }
+  const sorted = [...vals].sort((a, b) => a - b);
+  const lo = sorted[Math.floor(sorted.length * .01)], hi = sorted[Math.floor(sorted.length * .99)];
+  const dec = mode === 'height' ? 3 : (mode === 'flow' ? 2 : 1);
+  const unit = mode === 'speed' ? 'mm/s' : (mode === 'flow' ? 'mm³/s' : 'mm');
+  document.getElementById('lmin').textContent = lo.toFixed(dec) + ' ' + unit;
+  document.getElementById('lmax').textContent = hi.toFixed(dec) + ' ' + unit;
+  const col = pathObj.geometry.getAttribute('color'); const c = new THREE.Color();
+  for (let k = 0; k < segMeta.count; k++) {
+    const t = Math.max(0, Math.min(1, (vals[k] - lo) / Math.max(1e-9, hi - lo)));
+    c.setHSL(0.66 * (1 - t), 0.95, 0.55);
+    col.setXYZ(k * 2, c.r, c.g, c.b); col.setXYZ(k * 2 + 1, c.r, c.g, c.b);
+  }
+  col.needsUpdate = true;
+}
+
+function updateNozzlePosition() {
+  if (!nozzleObj || !segMeta || !pathObj) return;
+  const f = progressFrac;
+  const idx = Math.min(Math.floor(segMeta.count * f), segMeta.count - 1);
+  // each segment: 6 floats (x0,y0,z0, x1,y1,z1); take the end vertex
+  const base = idx * 6;
+  const x = segMeta.pos[base + 3];
+  const y = segMeta.pos[base + 4];
+  const z = segMeta.pos[base + 5];
+  const zOff = parseFloat(document.getElementById('nozzleZOffset').value) || 0;
+  nozzleObj.position.set(
+    x + pathObj.position.x,
+    y + pathObj.position.y,
+    z + pathObj.position.z + zOff
+  );
+  nozzleObj.visible = document.getElementById('showNozzle').checked;
+}
+
+function applyProgress() {
+  if (!pathObj || !segMeta) return;
+  const f = progressFrac;
+  pathObj.geometry.setDrawRange(0, Math.floor(segMeta.count * f) * 2);
+  updateNozzlePosition();
+}
+
+// ───────────────────────── curvature controls ────────────────────────────
+function getCurvatureFactor() {
+  return document.getElementById('curvSlider').value / 100;
+}
+
+document.getElementById('curvSlider').addEventListener('input', () => {
+  document.getElementById('curvVal').textContent =
+    document.getElementById('curvSlider').value + '%';
+});
+document.getElementById('densSlider').addEventListener('input', () => {
+  document.getElementById('densVal').textContent =
+    document.getElementById('densSlider').value + '%';
+});
+document.getElementById('steepCheck').addEventListener('change', e => {
+  document.getElementById('steepRow').style.opacity = e.target.checked ? '1' : '0.4';
+});
+document.getElementById('steepSlider').addEventListener('input', () => {
+  document.getElementById('steepVal').textContent =
+    document.getElementById('steepSlider').value + '°';
+});
+document.getElementById('smoothSlider').addEventListener('input', () => {
+  document.getElementById('smoothVal').textContent =
+    document.getElementById('smoothSlider').value + '%';
+});
+
+// ───────────────────────── slice flow ────────────────────────────────────
+const logEl = document.getElementById('log');
+const errEl = document.getElementById('error');
+function showError(msg) { errEl.textContent = msg; errEl.style.display = 'block'; }
+function clearError() { errEl.textContent = ''; errEl.style.display = 'none'; }
+let polling = null;
+function poll() {
+  fetch('/status').then(r => r.json()).then(s => {
+    logEl.textContent = s.log.join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  });
+}
+
+document.getElementById('sliceBtn').onclick = async () => {
+  if (!meshFile) return;
+  const btn = document.getElementById('sliceBtn');
+  btn.disabled = true; btn.textContent = 'Slicing…';
+  clearError();
+  document.getElementById('stats').textContent = '';
+  document.getElementById('verifyOut').innerHTML = '';
+  document.getElementById('warnings').textContent = '';
+  polling = setInterval(poll, 700);
+  try {
+    const buf = await meshFile.arrayBuffer();
+    // Merge curvature_factor and transform values into settings
+    const sliceSettings = {
+      ...settings,
+      curvature_factor: getCurvatureFactor(),
+      max_steepness_deg: document.getElementById('steepCheck').checked
+        ? parseFloat(document.getElementById('steepSlider').value) : 90,
+      layer_height_factor: parseFloat(document.getElementById('densSlider').value) / 100,
+      smoothing: parseFloat(document.getElementById('smoothSlider').value) / 100,
+      transform_rotate_x:    parseFloat(document.getElementById('trx').value) || 0,
+      transform_rotate_y:    parseFloat(document.getElementById('try_').value) || 0,
+      transform_rotate_z:    parseFloat(document.getElementById('trz').value) || 0,
+      transform_translate_x: parseFloat(document.getElementById('ttx').value) || 0,
+      transform_translate_y: parseFloat(document.getElementById('tty').value) || 0,
+      transform_translate_z: parseFloat(document.getElementById('ttz').value) || 0,
+    };
+    const resp = await fetch('/slice', {
+      method: 'POST', body: buf,
+      headers: {
+        'X-Filename': encodeURIComponent(meshFile.name),
+        'X-Settings': encodeURIComponent(JSON.stringify(sliceSettings)),
+        'X-Verify': document.getElementById('verify').checked ? '1' : '0',
+      }
+    });
+    const res = await resp.json();
+    if (!res.ok) { showError(res.error); return; }
+    gcodeText = res.gcode;
+    gcodeName = meshFile.name.replace(/\.(stl|obj)$/i, '') + '.gcode';
+    buildPath(gcodeText);
+    document.getElementById('dlBtn').disabled = false;
+    const st = res.stats;
+    document.getElementById('stats').textContent =
+      `saved: ${res.output_path}\n` +
+      `filament: ${st.filament_m} m (${st.filament_g} g)   est. ${st.print_time_h} h\n` +
+      `${st.segments.toLocaleString()} segments   z max ${st.z_max.toFixed(1)} mm`;
+    document.getElementById('warnings').innerHTML =
+      (res.warnings || []).map(w => `<div class="warn">⚠ ${w}</div>`).join('');
+    if (res.verify_report) {
+      document.getElementById('verifyOut').innerHTML =
+        `<div class="${res.verify_ok ? 'pass' : 'fail'}" style="font-size:12px;white-space:pre-wrap">` +
+        res.verify_report.join('\n') + '</div>';
+    }
+  } catch (e) {
+    showError('Request failed: ' + e);
+  } finally {
+    clearInterval(polling); poll();
+    btn.disabled = false; btn.textContent = 'Slice';
+  }
+};
+
+document.getElementById('dlBtn').onclick = () => {
+  if (!gcodeText) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([gcodeText], { type: 'text/plain' }));
+  a.download = gcodeName; a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// ───────────────────────── drag / browse ────────────────────────────────
+const drop = document.getElementById('drop');
+drop.onclick = () => document.getElementById('meshFile').click();
+document.getElementById('meshFile').onchange = e => { if (e.target.files[0]) loadMeshFile(e.target.files[0]); };
+addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+addEventListener('dragleave', () => drop.classList.remove('over'));
+addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f && /\.(stl|obj)$/i.test(f.name)) loadMeshFile(f);
+});
+
+// Nozzle drag / browse
+const nozzleDrop = document.getElementById('nozzleDrop');
+nozzleDrop.onclick = () => document.getElementById('nozzleFile').click();
+document.getElementById('nozzleFile').onchange = e => {
+  if (e.target.files[0]) loadNozzleFile(e.target.files[0]);
+};
+
+// ───────────────────────── view options ─────────────────────────────────
+document.getElementById('showMesh').onchange = e => { if (meshObj) meshObj.visible = e.target.checked; };
+document.getElementById('showPath').onchange = e => { if (pathObj) pathObj.visible = e.target.checked; };
+document.getElementById('showNozzle').onchange = e => { if (nozzleObj) nozzleObj.visible = e.target.checked && !!(segMeta && pathObj); };
+document.getElementById('meshOp').oninput = e => { meshMat.opacity = e.target.value / 100; };
+document.getElementById('progress').oninput = e => { progressFrac = e.target.value / 1000; applyProgress(); };
+document.getElementById('colorBy').onchange = colorize;
+document.getElementById('zoomSens').oninput = e => {
+  const z = parseFloat(e.target.value) / 100;
+  controls.zoomSpeed = z;
+  document.getElementById('zoomVal').textContent = z.toFixed(1) + '×';
+};
+document.getElementById('nozzleZOffset').oninput = updateNozzlePosition;
+
+// ───────────────────────── drag nozzle along the path ─────────────────────
+// Click-drag the nozzle model: it snaps to the toolpath vertex nearest the
+// cursor, searching only a sliding window of ±¾ turn around its current spot.
+// The window follows the nozzle, so circling the cursor walks it smoothly all
+// the way up or down the whole print, while it never jumps to the loop one
+// layer above/below (which would sit right on top in the view).
+const raycaster = new THREE.Raycaster();
+const canvas = renderer.domElement;
+const WINDOW_ANG = 1.5 * Math.PI;     // ±0.75 of a revolution
+let draggingNozzle = false, dragIdx = 0;
+
+function pointerNDC(e) {
+  const r = canvas.getBoundingClientRect();
+  return new THREE.Vector2(
+    ((e.clientX - r.left) / r.width) * 2 - 1,
+    -((e.clientY - r.top) / r.height) * 2 + 1
+  );
+}
+
+canvas.addEventListener('pointerdown', e => {
+  if (!nozzleObj || !nozzleObj.visible || !segMeta || !segMeta.wend) return;
+  raycaster.setFromCamera(pointerNDC(e), camera);
+  if (raycaster.intersectObject(nozzleObj, true).length === 0) return;  // not on the nozzle
+  draggingNozzle = true;
+  controls.enabled = false;
+  canvas.style.cursor = 'grabbing';
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  dragIdx = Math.min(Math.floor(segMeta.count * progressFrac), segMeta.count - 1);
+  e.preventDefault();
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (!draggingNozzle) {
+    // hover feedback so the nozzle reads as grabbable
+    if (nozzleObj && nozzleObj.visible && segMeta && segMeta.wend) {
+      raycaster.setFromCamera(pointerNDC(e), camera);
+      canvas.style.cursor = raycaster.intersectObject(nozzleObj, true).length ? 'grab' : '';
+    }
+    return;
+  }
+  raycaster.setFromCamera(pointerNDC(e), camera);
+  const ray = raycaster.ray, w = segMeta.wend, ang = segMeta.ang, n = segMeta.count;
+  const a0 = ang[dragIdx];
+  // sliding window bounded by ±0.75 turn of unwrapped angle (abs distance works
+  // for either winding direction since ang is monotonic along the path)
+  let lo = dragIdx; while (lo > 0 && Math.abs(a0 - ang[lo - 1]) <= WINDOW_ANG) lo--;
+  let hi = dragIdx; while (hi < n - 1 && Math.abs(ang[hi + 1] - a0) <= WINDOW_ANG) hi++;
+  let best = dragIdx, bestD = Infinity; const p = new THREE.Vector3();
+  for (let k = lo; k <= hi; k++) {
+    p.set(w[k * 3], w[k * 3 + 1], w[k * 3 + 2]);
+    const d = ray.distanceSqToPoint(p);
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  // Damp each move to a fraction of a turn so a momentarily ambiguous pick can
+  // never make the nozzle visibly jump; fast drags just take a few more events.
+  const maxStep = Math.max(2, Math.round(0.33 * (segMeta.segPerTurn || n)));
+  best = Math.max(dragIdx - maxStep, Math.min(dragIdx + maxStep, best));
+  dragIdx = best;
+  progressFrac = (best >= n - 1) ? 1 : (best + 0.5) / n;
+  document.getElementById('progress').value = Math.round(progressFrac * 1000);
+  applyProgress();
+  e.preventDefault();
+});
+
+function endNozzleDrag(e) {
+  if (!draggingNozzle) return;
+  draggingNozzle = false;
+  controls.enabled = true;
+  canvas.style.cursor = '';
+  try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+}
+canvas.addEventListener('pointerup', endNozzleDrag);
+canvas.addEventListener('pointercancel', endNozzleDrag);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
+});
+(function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+</script>
+</body>
+</html>
