@@ -167,3 +167,6 @@ slicer asks once when it starts, and it would love a "yes". 🌍
 ## License
 
 Free to use, modify, and share. If you build on it, a link back is appreciated.
+If you want to offer me support, I'd definitely appreciate - it's not easy being an artist.
+My instagram is a good way to reach me or purchase some of my things :)
+https://www.instagram.com/_manifestdesign/
